@@ -56,9 +56,25 @@ const AdminDashboardContent: React.FC = () => {
     customers: 0
   });
   const [recentOrders, setRecentOrders] = useState<RecentOrder[]>([]);
+  const [steadfastBalance, setSteadfastBalance] = useState<number | null>(null);
+  const [activityData, setActivityData] = useState<{ day: string; value: number }[]>([]);
+  const [categorySalesData, setCategorySalesData] = useState<{ category: string; percentage: number; color: string }[]>([]);
+
+  const fetchSteadfastBalance = async () => {
+    try {
+      const res = await fetch('/api/courier/steadfast/balance');
+      const data = await res.json();
+      if (data && (data.current_balance !== undefined || data.balance !== undefined)) {
+        setSteadfastBalance(data.current_balance ?? data.balance);
+      }
+    } catch (e) {
+      console.error('Failed to fetch Steadfast balance:', e);
+    }
+  };
 
   const fetchDashboardData = async () => {
     setLoading(true);
+    fetchSteadfastBalance();
     try {
       // 1. Fetch Orders and Statistics
       const { data: orders, error: ordersError } = await supabase
@@ -92,11 +108,67 @@ const AdminDashboardContent: React.FC = () => {
         customers: customerCount || 0
       });
 
+      // 4. Calculate 14-Day Store Performance Trend (Daily Sales)
+      const last14Days = Array.from({ length: 14 }).map((_, i) => {
+        const d = new Date();
+        d.setDate(d.getDate() - (13 - i));
+        return d;
+      });
+
+      const computedActivity = last14Days.map(date => {
+        const dayLabel = date.toLocaleDateString('en-US', { month: 'short', day: '2-digit' });
+        const yr = date.getFullYear();
+        const mo = date.getMonth();
+        const dy = date.getDate();
+
+        const totalSales = (orders || [])
+          .filter(o => {
+            if (o.status === 'Cancelled' || !o.created_at) return false;
+            const oDate = new Date(o.created_at);
+            return oDate.getFullYear() === yr && oDate.getMonth() === mo && oDate.getDate() === dy;
+          })
+          .reduce((sum, o) => sum + Number(o.total || 0), 0);
+
+        return { day: dayLabel, value: totalSales };
+      });
+      setActivityData(computedActivity);
+
+      // 5. Calculate Real Category Sales Breakdown
+      const { data: productsList } = await supabase.from('products').select('id, title, category');
+      const { data: orderItemsList } = await supabase.from('order_items').select('product_id, product_title, quantity, price');
+
+      const catTotals: { [cat: string]: number } = {};
+      if (orderItemsList && orderItemsList.length > 0) {
+        orderItemsList.forEach(item => {
+          let categoryName = 'General';
+          if (productsList) {
+            const p = productsList.find(pr => pr.id === item.product_id || pr.title === item.product_title);
+            if (p && p.category) categoryName = p.category;
+          }
+          const itemValue = Number(item.price || 0) * Number(item.quantity || 1);
+          catTotals[categoryName] = (catTotals[categoryName] || 0) + itemValue;
+        });
+      }
+
+      const grandCatTotal = Object.values(catTotals).reduce((a, b) => a + b, 0);
+      const palette = ['#ff5a00', '#3b82f6', '#10b981', '#8b5cf6', '#f59e0b', '#ec4899', '#06b6d4'];
+
+      if (grandCatTotal > 0) {
+        const computedCategories = Object.entries(catTotals).map(([cat, amt], idx) => ({
+          category: cat,
+          percentage: Math.round((amt / grandCatTotal) * 100),
+          color: palette[idx % palette.length]
+        }));
+        setCategorySalesData(computedCategories);
+      } else {
+        setCategorySalesData([]);
+      }
+
       // Format recent orders
       const formattedRecent: RecentOrder[] = orders.slice(0, 5).map(o => ({
         id: `#ORD-${o.id}`,
         customer_name: o.customer_name,
-        product: 'N/A', // We'd need to fetch order_items to get first product
+        product: 'N/A',
         amount: `৳${o.total.toLocaleString()}`,
         status: o.status
       }));
@@ -175,6 +247,15 @@ const AdminDashboardContent: React.FC = () => {
               color="#ff5a00"
             />
             <StatCard
+              label="SteadFast COD Balance"
+              value={steadfastBalance !== null ? `৳${steadfastBalance.toLocaleString()}` : 'Check Live'}
+              icon={Dollar01Icon}
+              trend="Courier COD"
+              trendUp={true}
+              color="#0284c7"
+              onClick={fetchSteadfastBalance}
+            />
+            <StatCard
               label="Total Orders"
               value={stats.orders.toString()}
               icon={ShoppingBag01Icon}
@@ -183,20 +264,12 @@ const AdminDashboardContent: React.FC = () => {
               color="#3b82f6"
             />
             <StatCard
-              label="Total Customers"
-              value={stats.customers.toLocaleString()}
-              icon={UserGroupIcon}
-              trend="+5.4%"
-              trendUp={true}
-              color="#10b981"
-            />
-            <StatCard
               label="Total Products"
               value={stats.products.toString()}
-              icon={ShoppingBag01Icon}
-              trend="+2 new"
+              icon={UserGroupIcon}
+              trend=""
               trendUp={true}
-              color="#8b5cf6"
+              color="#10b981"
             />
           </>
         )}
@@ -322,7 +395,10 @@ const AdminDashboardContent: React.FC = () => {
           </div>
         </section>
 
-        <SalesAnalytics />
+        <SalesAnalytics 
+          activityData={activityData.length > 0 ? activityData : undefined}
+          salesData={categorySalesData.length > 0 ? categorySalesData : undefined}
+        />
       </div>
     </AdminLayout>
   );

@@ -113,6 +113,7 @@ const SalesAnalytics: React.FC<SalesAnalyticsProps> = ({
             />
             <YAxis hide />
             <Tooltip 
+              formatter={(val: any) => [`৳${Number(val).toLocaleString()}`, 'Sales']}
               contentStyle={{ 
                 borderRadius: '8px', 
                 border: 'none', 

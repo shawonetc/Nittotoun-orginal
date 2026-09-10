@@ -47,6 +47,9 @@ interface Order {
   total: number;
   subtotal: number;
   shipping_cost: number;
+  consignment_id?: string;
+  tracking_code?: string;
+  courier_status?: string;
   items?: OrderItem[];
 }
 
@@ -103,6 +106,127 @@ const AdminOrdersPageContent: React.FC = () => {
   const [editTotal, setEditTotal] = React.useState<number>(0);
   const [editItems, setEditItems] = React.useState<OrderItem[]>([]);
 
+  // SteadFast Courier States
+  const [steadfastBalance, setSteadfastBalance] = React.useState<number | null>(null);
+  const [sendingToSteadfast, setSendingToSteadfast] = React.useState(false);
+  const [trackingLoading, setTrackingLoading] = React.useState(false);
+  const [trackingDetails, setTrackingDetails] = React.useState<any>(null);
+
+  const fetchSteadfastBalance = async () => {
+    try {
+      const res = await fetch('/api/courier/steadfast/balance');
+      const data = await res.json();
+      if (data && (data.current_balance !== undefined || data.balance !== undefined)) {
+        setSteadfastBalance(data.current_balance ?? data.balance);
+      }
+    } catch (e) {
+      console.error('Failed to fetch Steadfast balance:', e);
+    }
+  };
+
+  const handleSendToSteadfast = async (order: Order) => {
+    setSendingToSteadfast(true);
+    try {
+      const cleanInvoice = order.id.replace('#ORD-', 'INV-');
+      const payload = {
+        invoice: cleanInvoice,
+        recipient_name: order.customer_name,
+        recipient_phone: order.customer_phone,
+        recipient_address: order.address || 'Dhaka, Bangladesh',
+        cod_amount: order.total,
+        note: order.notes || '',
+      };
+
+      const res = await fetch('/api/courier/steadfast/create-order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+
+      if (data.status === 200 && data.consignment) {
+        const consignment = data.consignment;
+        const rawId = order.id.replace('#ORD-', '');
+        
+        // Update database if fields exist or local state
+        await supabase
+          .from('orders')
+          .update({
+            status: 'Processing',
+            consignment_id: consignment.consignment_id,
+            tracking_code: consignment.tracking_code,
+            courier_status: consignment.status || 'in_review',
+          })
+          .eq('id', rawId);
+
+        const updatedOrder: Order = {
+          ...order,
+          status: 'Processing',
+          consignment_id: consignment.consignment_id,
+          tracking_code: consignment.tracking_code,
+          courier_status: consignment.status || 'in_review',
+        };
+
+        setOrders(prev => prev.map(o => o.id === order.id ? updatedOrder : o));
+        setSelectedOrder(updatedOrder);
+        alert(`SteadFast Order Created Successfully!\nConsignment ID: ${consignment.consignment_id}\nTracking Code: ${consignment.tracking_code}`);
+        fetchSteadfastBalance();
+      } else {
+        alert(`SteadFast Error: ${data.message || data.errors?.recipient_phone?.[0] || 'Order creation failed'}`);
+      }
+    } catch (err: any) {
+      alert(`Error creating SteadFast order: ${err.message}`);
+    } finally {
+      setSendingToSteadfast(false);
+    }
+  };
+
+  const handleFetchTrackingStatus = async (consignment_id?: string, invoice?: string) => {
+    setTrackingLoading(true);
+    setTrackingDetails(null);
+    try {
+      let query = '';
+      if (consignment_id) query = `consignment_id=${consignment_id}`;
+      else if (invoice) query = `invoice=${invoice.replace('#ORD-', 'INV-')}`;
+
+      if (!query) return;
+
+      const res = await fetch(`/api/courier/steadfast/status?${query}`);
+      const data = await res.json();
+      if (data.status === 200 || data.delivery_status) {
+        setTrackingDetails(data);
+      } else {
+        alert(data.message || 'Tracking details not found');
+      }
+    } catch (e: any) {
+      alert(`Failed to fetch tracking: ${e.message}`);
+    } finally {
+      setTrackingLoading(false);
+    }
+  };
+
+  const handleReturnRequest = async (order: Order) => {
+    if (!confirm(`Are you sure you want to mark Order ${order.id} as Returned / Return Requested?`)) return;
+    try {
+      const rawId = order.id.replace('#ORD-', '');
+      await supabase
+        .from('orders')
+        .update({
+          status: 'Cancelled',
+          courier_status: 'returned',
+        })
+        .eq('id', rawId);
+
+      setOrders(prev => prev.map(o => o.id === order.id ? { ...o, status: 'Cancelled', courier_status: 'returned' } : o));
+      if (selectedOrder?.id === order.id) {
+        setSelectedOrder(prev => prev ? { ...prev, status: 'Cancelled', courier_status: 'returned' } : null);
+      }
+      alert('Order marked as Return Requested.');
+    } catch (e: any) {
+      alert(`Return request error: ${e.message}`);
+    }
+  };
+
   const fetchOrders = async () => {
     setLoading(true);
     try {
@@ -125,7 +249,10 @@ const AdminOrdersPageContent: React.FC = () => {
         date: new Date(o.created_at).toISOString().split('T')[0],
         total: o.total,
         subtotal: o.subtotal || (o.total - o.shipping_cost),
-        shipping_cost: o.shipping_cost
+        shipping_cost: o.shipping_cost,
+        consignment_id: o.consignment_id,
+        tracking_code: o.tracking_code,
+        courier_status: o.courier_status
       }));
 
       setOrders(formattedOrders);
@@ -141,6 +268,7 @@ const AdminOrdersPageContent: React.FC = () => {
 
   useEffect(() => {
     const init = async () => {
+      fetchSteadfastBalance();
       const allOrders = await fetchOrders();
       const orderId = searchParams.get('id');
       if (orderId && allOrders) {
@@ -796,6 +924,69 @@ const AdminOrdersPageContent: React.FC = () => {
                     </div>
                   </div>
 
+                  {/* SteadFast Courier Action Card */}
+                  <div style={{ marginTop: '24px', padding: '16px', borderRadius: '12px', border: '1px solid #e2e8f0', backgroundColor: '#f8fafc' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                      <h4 style={{ fontSize: '14px', fontWeight: '700', color: '#1e293b', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        🚚 SteadFast Courier Integration
+                      </h4>
+                      {selectedOrder.consignment_id && (
+                        <span style={{ fontSize: '12px', padding: '3px 8px', borderRadius: '6px', backgroundColor: '#dcfce7', color: '#15803d', fontWeight: '600' }}>
+                          ID: {selectedOrder.consignment_id}
+                        </span>
+                      )}
+                    </div>
+
+                    {selectedOrder.consignment_id ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                        <div style={{ fontSize: '13px', color: '#475569' }}>
+                          <strong>Tracking Code:</strong> {selectedOrder.tracking_code || 'N/A'}<br />
+                          <strong>Courier Status:</strong> <span style={{ textTransform: 'capitalize', color: '#0284c7', fontWeight: '600' }}>{selectedOrder.courier_status || 'In Transit'}</span>
+                        </div>
+                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                          <button
+                            className={styles.secondaryBtn}
+                            style={{ fontSize: '13px', padding: '6px 12px', backgroundColor: '#3b82f6', color: '#fff', border: 'none' }}
+                            onClick={() => handleFetchTrackingStatus(selectedOrder.consignment_id, selectedOrder.id)}
+                            disabled={trackingLoading}
+                          >
+                            {trackingLoading ? 'Fetching Status...' : '🔍 Check Live Status'}
+                          </button>
+                          <button
+                            className={styles.secondaryBtn}
+                            style={{ fontSize: '13px', padding: '6px 12px', backgroundColor: '#ef4444', color: '#fff', border: 'none' }}
+                            onClick={() => handleReturnRequest(selectedOrder)}
+                          >
+                            🔄 Return Request
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
+                        <p style={{ fontSize: '13px', color: '#64748b', margin: 0 }}>
+                          Order hasn't been sent to SteadFast courier yet.
+                        </p>
+                        <button
+                          className={styles.primaryBtn}
+                          style={{ padding: '8px 16px', fontSize: '13px', whiteSpace: 'nowrap', backgroundColor: '#ff5a00' }}
+                          onClick={() => handleSendToSteadfast(selectedOrder)}
+                          disabled={sendingToSteadfast}
+                        >
+                          {sendingToSteadfast ? 'Sending Order...' : '🚀 Send to SteadFast'}
+                        </button>
+                      </div>
+                    )}
+
+                    {trackingDetails && (
+                      <div style={{ marginTop: '14px', padding: '12px', backgroundColor: '#ffffff', borderRadius: '8px', border: '1px solid #cbd5e1', fontSize: '13px' }}>
+                        <strong style={{ color: '#0f172a' }}>Live Delivery Info:</strong>
+                        <pre style={{ margin: '6px 0 0 0', fontSize: '12px', whiteSpace: 'pre-wrap', color: '#334155' }}>
+                          {JSON.stringify(trackingDetails, null, 2)}
+                        </pre>
+                      </div>
+                    )}
+                  </div>
+
                   <div className={styles.minimalSection}>
                     <h4 style={{ fontSize: '13px', color: 'var(--text-light)', textTransform: 'uppercase', letterSpacing: '1px' }}>Update Order Status</h4>
                     <div className={styles.statusToggleGroup}>
@@ -888,6 +1079,15 @@ const AdminOrdersPageContent: React.FC = () => {
               trend="" 
               trendUp={true} 
               color="#ff5a00" 
+            />
+            <StatCard 
+              label="SteadFast COD Balance" 
+              value={steadfastBalance !== null ? `৳${steadfastBalance.toLocaleString()}` : 'Check Live'} 
+              icon={Dollar01Icon} 
+              trend="Live Balance" 
+              trendUp={true} 
+              color="#0284c7" 
+              onClick={fetchSteadfastBalance}
             />
           </>
         )}
@@ -1011,6 +1211,39 @@ const AdminOrdersPageContent: React.FC = () => {
                             >
                               <HugeiconsIcon icon={PrinterIcon} size={16} />
                               <span>Print Invoice</span>
+                            </button>
+                            <div style={{ height: '1px', backgroundColor: 'var(--border-color)', margin: '4px 0' }}></div>
+                            {!order.consignment_id ? (
+                              <button 
+                                className={styles.actionDropdownItem}
+                                style={{ color: '#ff5a00' }}
+                                onClick={() => {
+                                  handleSendToSteadfast(order);
+                                  setActiveMenu(null);
+                                }}
+                              >
+                                🚀 <span>Send to SteadFast</span>
+                              </button>
+                            ) : (
+                              <button 
+                                className={styles.actionDropdownItem}
+                                style={{ color: '#0284c7' }}
+                                onClick={() => {
+                                  handleFetchTrackingStatus(order.consignment_id, order.id);
+                                  setActiveMenu(null);
+                                }}
+                              >
+                                🔍 <span>Check Tracking</span>
+                              </button>
+                            )}
+                            <button 
+                              className={styles.actionDropdownItem}
+                              onClick={() => {
+                                handleReturnRequest(order);
+                                setActiveMenu(null);
+                              }}
+                            >
+                              🔄 <span>Return Request</span>
                             </button>
                             <div style={{ height: '1px', backgroundColor: 'var(--border-color)', margin: '4px 0' }}></div>
                             <button 

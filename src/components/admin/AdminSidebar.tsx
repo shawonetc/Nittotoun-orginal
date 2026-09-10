@@ -17,7 +17,10 @@ import {
   UserIcon,
   AiChat02Icon,
   ArrowRight01Icon,
-  BrowserIcon
+  BrowserIcon,
+  DeliveryTruck01Icon,
+  Location01Icon,
+  RefreshIcon
 } from '@hugeicons/core-free-icons';
 import styles from '../../app/admin/Admin.module.css';
 import { supabase } from '../../lib/supabase';
@@ -30,6 +33,15 @@ const navGroups = [
     items: [
       { name: 'Dashboard', icon: DashboardSquare01Icon, href: '/admin' },
       { name: 'Analytics', icon: ChartLineData01Icon, href: '/admin/reports' },
+    ]
+  },
+  {
+    title: '🚚 Courier',
+    items: [
+      { name: 'Overview', icon: DashboardSquare01Icon, href: '/admin/courier/overview' },
+      { name: 'Shipments', icon: DeliveryTruck01Icon, href: '/admin/courier/shipments' },
+      { name: 'Tracking', icon: Location01Icon, href: '/admin/courier/tracking' },
+      { name: 'Returns', icon: RefreshIcon, href: '/admin/courier/returns' },
     ]
   },
   {

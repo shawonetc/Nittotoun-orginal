@@ -12,7 +12,9 @@ import {
   Location01Icon,
   PackageIcon,
   CallIcon,
-  CreditCardIcon
+  CreditCardIcon,
+  DeliveryTruck01Icon,
+  RefreshIcon
 } from "@hugeicons/core-free-icons";
 import styles from './track-order.module.css';
 import Image from 'next/image';
@@ -36,6 +38,9 @@ interface Order {
   shipping_cost: number;
   status: string;
   payment_status: string;
+  consignment_id?: string;
+  tracking_code?: string;
+  courier_status?: string;
   created_at: string;
   order_items: OrderItem[];
 }
@@ -46,6 +51,31 @@ export default function TrackOrderPage() {
   const [orders, setOrders] = useState<Order[] | null>(null);
   const [searched, setSearched] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
+  const [liveCourierStatus, setLiveCourierStatus] = useState<{ [orderId: number]: any }>({});
+  const [loadingCourier, setLoadingCourier] = useState<{ [orderId: number]: boolean }>({});
+
+  const fetchLiveCourierStatus = async (order: Order) => {
+    setLoadingCourier(prev => ({ ...prev, [order.id]: true }));
+    try {
+      let url = `/api/courier/steadfast/status?invoice=INV-${order.id}`;
+      if (order.consignment_id) {
+        url = `/api/courier/steadfast/status?consignment_id=${order.consignment_id}`;
+      }
+      const res = await fetch(url);
+      const data = await res.json();
+      if (data && (data.delivery_status || data.status === 200)) {
+        setLiveCourierStatus(prev => ({ ...prev, [order.id]: data }));
+      } else if (data && data.consignment) {
+        setLiveCourierStatus(prev => ({ ...prev, [order.id]: data.consignment }));
+      } else {
+        setLiveCourierStatus(prev => ({ ...prev, [order.id]: { error: data.message || 'কুরিয়ারে অর্ডারের সরাসরি তথ্য পাওয়া যায়নি' } }));
+      }
+    } catch (err: any) {
+      setLiveCourierStatus(prev => ({ ...prev, [order.id]: { error: 'কুরিয়ার সার্ভিস সার্ভারের সাথে সংযোগ করা সম্ভব হয়নি' } }));
+    } finally {
+      setLoadingCourier(prev => ({ ...prev, [order.id]: false }));
+    }
+  };
 
   const handleTrack = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -54,38 +84,45 @@ export default function TrackOrderPage() {
 
     const cleanInput = phone.trim();
     if (!cleanInput) {
-      setErrorMsg('দয়া করে আপনার মোবাইল নাম্বারটি দিন।');
-      return;
-    }
-
-    // Basic format validation
-    const digitsOnly = cleanInput.replace(/\D/g, '');
-    if (digitsOnly.length < 10) {
-      setErrorMsg('সঠিক মোবাইল নাম্বার দিন (যেমন: 017XXXXXXXX)।');
+      setErrorMsg('দয়া করে আপনার মোবাইল নাম্বার, অর্ডার আইডি বা Consignment ID দিন।');
       return;
     }
 
     setLoading(true);
 
     try {
-      // Create variations to search
-      // e.g. input: 01911940406
-      const rawDigits = digitsOnly.startsWith('88') ? digitsOnly.slice(2) : digitsOnly; // e.g. 01911940406
-      const standard01 = rawDigits.startsWith('0') ? rawDigits : '0' + rawDigits; // 01911940406
-      const rawNoPrefix = standard01.startsWith('0') ? standard01.slice(1) : standard01; // 1911940406
-      const phone88 = '88' + standard01; // 8801911940406
-      const phonePlus88 = '+88' + standard01; // +8801911940406
+      const numericInput = cleanInput.replace('#ORD-', '').replace('#', '');
+      const digitsOnly = cleanInput.replace(/\D/g, '');
+      const rawDigits = digitsOnly.startsWith('88') ? digitsOnly.slice(2) : digitsOnly;
+      const standard01 = rawDigits.startsWith('0') ? rawDigits : '0' + rawDigits;
+      const rawNoPrefix = standard01.startsWith('0') ? standard01.slice(1) : standard01;
+      const phone88 = '88' + standard01;
+      const phonePlus88 = '+88' + standard01;
 
-      const { data, error } = await supabase
-        .from('orders')
-        .select('*, order_items(*)')
-        .or(`customer_phone.eq.${cleanInput},customer_phone.eq.${standard01},customer_phone.eq.${rawNoPrefix},customer_phone.eq.${phone88},customer_phone.eq.${phonePlus88}`)
-        .order('created_at', { ascending: false });
+      let query = supabase.from('orders').select('*, order_items(*)');
+
+      // If user typed order ID (e.g. 33 or #ORD-33)
+      if (/^\d+$/.test(numericInput) && numericInput.length <= 6) {
+        query = query.or(`id.eq.${numericInput},customer_phone.eq.${cleanInput},customer_phone.eq.${standard01},consignment_id.eq.${cleanInput}`);
+      } else {
+        query = query.or(`customer_phone.eq.${cleanInput},customer_phone.eq.${standard01},customer_phone.eq.${rawNoPrefix},customer_phone.eq.${phone88},customer_phone.eq.${phonePlus88},consignment_id.eq.${cleanInput}`);
+      }
+
+      const { data, error } = await query.order('created_at', { ascending: false });
 
       if (error) throw error;
 
-      setOrders(data as Order[]);
+      const fetchedOrders = (data || []) as Order[];
+      setOrders(fetchedOrders);
       setSearched(true);
+
+      // Auto fetch Steadfast status for orders that have consignment_id or were dispatched
+      fetchedOrders.forEach(o => {
+        if (o.consignment_id || o.status === 'Processing' || o.status === 'Shipped') {
+          fetchLiveCourierStatus(o);
+        }
+      });
+
     } catch (err) {
       console.error('Error tracking order:', err);
       setErrorMsg('সার্ভারে সমস্যা হয়েছে। দয়া করে কিছুক্ষণ পর আবার চেষ্টা করুন।');
@@ -145,6 +182,40 @@ export default function TrackOrderPage() {
     }
   };
 
+  const getSteadfastStatusLabel = (statusStr?: string) => {
+    if (!statusStr) return 'প্রসেসিং হচ্ছে / In Review';
+    const s = statusStr.toLowerCase();
+    if (s === 'delivered' || s === 'delivered_approval_pending') return 'ডেলিভারি সম্পন্ন ✅';
+    if (s === 'in_transit') return 'পথে আছে (In Transit) 🚚';
+    if (s === 'hold') return 'কুরিয়ার অফিসে হোল্ডে আছে ⚠️';
+    if (s === 'cancelled' || s === 'canceled' || s === 'returned') return 'বাতিল / রিটার্ন করা হয়েছে ❌';
+    if (s === 'partial_delivered') return 'আংশিক ডেলিভারি 📦';
+    if (s === 'in_review' || s === 'pending') return 'কুরিয়ার প্রসেসিং এ রয়েছে ⏳';
+    return statusStr;
+  };
+
+  const getSteadfastStatusMessage = (statusStr?: string) => {
+    if (!statusStr) return 'অর্ডারটি Steadfast কুরিয়ার সার্ভিসে পাঠানোর জন্য প্রস্তুত করা হচ্ছে।';
+    const s = statusStr.toLowerCase();
+    if (s === 'delivered' || s === 'delivered_approval_pending') return 'আপনার পার্সেলটি গ্রাহকের নিকট সফলভাবে পৌঁছে দেওয়া হয়েছে। ধন্যবাদ!';
+    if (s === 'in_transit') return 'আপনার পার্সেলটি ডেলিভারির জন্য বর্তমানে Steadfast রাইডারের নিকট বা গন্তব্যের পথে রয়েছে।';
+    if (s === 'hold') return 'গ্রাহকের অনুরোধে অথবা ঠিকানার কারণে পার্সেলটি বর্তমানে স্থানীয় Steadfast পয়েন্টে হোল্ড রয়েছে।';
+    if (s === 'cancelled' || s === 'canceled' || s === 'returned') return 'পার্সেলটির ডেলিভারি বাতিল করা হয়েছে এবং মার্চেন্টের কাছে রিটার্ন করা হচ্ছে।';
+    if (s === 'partial_delivered') return 'পার্সেলটির কিছু অংশ বা পরিমাণ সফলভাবে ডেলিভারি হয়েছে।';
+    return 'Steadfast কুরিয়ার এন্ট্রি করা হয়েছে। শীঘ্রই লাইভ ট্র্যাকিং সম্পূর্ণ তথ্য যুক্ত হবে।';
+  };
+
+  const getStepActive = (order: Order, step: number) => {
+    const s = (order.status || '').toLowerCase();
+    const cStatus = (order.courier_status || '').toLowerCase();
+    
+    if (step === 1) return true; // Order Confirmed
+    if (step === 2) return s !== 'new order' && s !== 'new' && s !== 'cancelled';
+    if (step === 3) return s === 'processing' || s === 'shipped' || s === 'delivered' || !!order.consignment_id || cStatus === 'in_transit';
+    if (step === 4) return s === 'delivered' || cStatus === 'delivered' || cStatus === 'delivered_approval_pending';
+    return false;
+  };
+
   return (
     <>
       <Header />
@@ -152,17 +223,17 @@ export default function TrackOrderPage() {
         <div className={styles.container}>
           <div className={styles.cardHeader}>
             <h1>অর্ডার ট্র্যাক করুন</h1>
-            <p>আপনার মোবাইল নাম্বার দিয়ে অর্ডারের বর্তমান অবস্থা চেক করুন</p>
+            <p>আপনার মোবাইল নাম্বার, অর্ডার আইডি বা Consignment ID দিয়ে অর্ডারের বর্তমান অবস্থা চেক করুন</p>
           </div>
 
           <form onSubmit={handleTrack} className={styles.trackForm}>
             <div className={styles.inputWrapper}>
               <HugeiconsIcon icon={CallIcon} size={20} className={styles.inputIcon} />
               <input
-                type="tel"
+                type="text"
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
-                placeholder="আপনার মোবাইল নাম্বার দিন (যেমন: 019XXXXXXXX)"
+                placeholder="মোবাইল নাম্বার, অর্ডার আইডি (#ORD-33) বা Consignment ID দিন..."
                 className={styles.inputField}
               />
             </div>
@@ -181,16 +252,17 @@ export default function TrackOrderPage() {
 
           {searched && orders && orders.length === 0 && (
             <div className={styles.noOrderAlert}>
-              <p>দুঃখিত, এই মোবাইল নাম্বারে কোনো অর্ডার পাওয়া যায়নি। দয়া করে সঠিক মোবাইল নাম্বার দিন।</p>
+              <p>দুঃখিত, কোনো অর্ডার পাওয়া যায়নি। দয়া করে সঠিক মোবাইল নাম্বার বা অর্ডার আইডি দিন।</p>
             </div>
           )}
 
           {searched && orders && orders.length > 0 && (
             <div className={styles.resultsContainer}>
-              <h2 className={styles.resultsTitle}>অর্ডার এর বিবরণ ({orders.length}টি পাওয়া গেছে)</h2>
+              <h2 className={styles.resultsTitle}>অর্ডার বিবরণ ({orders.length}টি পাওয়া গেছে)</h2>
               {orders.map((order) => {
                 const statusInfo = getStatusLabel(order.status);
                 const paymentInfo = getPaymentLabel(order.payment_status);
+                const courierData = liveCourierStatus[order.id];
 
                 return (
                   <div key={order.id} className={styles.orderCard}>
@@ -206,6 +278,87 @@ export default function TrackOrderPage() {
                       <div className={styles.badgeContainer}>
                         <span className={`${styles.badge} ${statusInfo.class}`}>{statusInfo.text}</span>
                       </div>
+                    </div>
+
+                    {/* Progress Stepper Timeline */}
+                    <div className={styles.stepperContainer}>
+                      <div className={`${styles.stepItem} ${getStepActive(order, 1) ? styles.stepActive : ''}`}>
+                        <div className={styles.stepCircle}>1</div>
+                        <span className={styles.stepLabel}>অর্ডার গৃহীত</span>
+                      </div>
+                      <div className={`${styles.stepLine} ${getStepActive(order, 2) ? styles.stepLineActive : ''}`} />
+                      <div className={`${styles.stepItem} ${getStepActive(order, 2) ? styles.stepActive : ''}`}>
+                        <div className={styles.stepCircle}>2</div>
+                        <span className={styles.stepLabel}>প্রসেসিং</span>
+                      </div>
+                      <div className={`${styles.stepLine} ${getStepActive(order, 3) ? styles.stepLineActive : ''}`} />
+                      <div className={`${styles.stepItem} ${getStepActive(order, 3) ? styles.stepActive : ''}`}>
+                        <div className={styles.stepCircle}>3</div>
+                        <span className={styles.stepLabel}>কুরিয়ারে শিপড 🚚</span>
+                      </div>
+                      <div className={`${styles.stepLine} ${getStepActive(order, 4) ? styles.stepLineActive : ''}`} />
+                      <div className={`${styles.stepItem} ${getStepActive(order, 4) ? styles.stepActive : ''}`}>
+                        <div className={styles.stepCircle}>4</div>
+                        <span className={styles.stepLabel}>ডেলিভারি সম্পন্ন 🎉</span>
+                      </div>
+                    </div>
+
+                    {/* Live Steadfast Courier Parcel Tracking Widget */}
+                    <div className={styles.liveCourierContainer}>
+                      <div className={styles.liveCourierHeader}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <HugeiconsIcon icon={DeliveryTruck01Icon} size={22} color="#ff5a00" />
+                          <h3 style={{ margin: 0, fontSize: '15px', fontWeight: '700', color: '#1f2937' }}>
+                            🚀 লাইভ কুরিয়ার ট্র্যাকিং (SteadFast Courier)
+                          </h3>
+                        </div>
+                        <button 
+                          type="button"
+                          className={styles.refreshCourierBtn}
+                          onClick={() => fetchLiveCourierStatus(order)}
+                          disabled={loadingCourier[order.id]}
+                        >
+                          {loadingCourier[order.id] ? 'আপডেট হচ্ছে...' : 'লাইভ আপডেট চেক করুন'}
+                        </button>
+                      </div>
+
+                      {courierData ? (
+                        courierData.error ? (
+                          <p className={styles.courierErrorText}>
+                            {courierData.error}
+                          </p>
+                        ) : (
+                          <div className={styles.liveCourierBody}>
+                            <div className={styles.courierStatusBadgeRow}>
+                              <span className={styles.courierBadge}>
+                                কুরিয়ার স্ট্যাটাস: <strong>{getSteadfastStatusLabel(courierData.delivery_status || courierData.status || order.courier_status)}</strong>
+                              </span>
+                              {(order.consignment_id || courierData.consignment_id) && (
+                                <span className={styles.consignmentBadge}>
+                                  Consignment ID: <strong>{order.consignment_id || courierData.consignment_id}</strong>
+                                </span>
+                              )}
+                              {(order.tracking_code || courierData.tracking_code) && (
+                                <span className={styles.consignmentBadge} style={{ background: '#f0fdf4', color: '#166534' }}>
+                                  Tracking Code: <strong>{order.tracking_code || courierData.tracking_code}</strong>
+                                </span>
+                              )}
+                            </div>
+                            <p className={styles.courierNoteText}>
+                              {getSteadfastStatusMessage(courierData.delivery_status || courierData.status || order.courier_status)}
+                            </p>
+                          </div>
+                        )
+                      ) : (
+                        <div className={styles.liveCourierPlaceholder}>
+                          <p style={{ margin: 0, fontSize: '13.5px', color: '#4b5563' }}>
+                            {order.consignment_id ? 
+                              `কুরিয়ার Consignment ID (${order.consignment_id}) পাওয়া গেছে। লাইভ আপডেট দেখতে 'লাইভ আপডেট চেক করুন' বাটনে চাপ দিন।` : 
+                              'পার্সেলটি Steadfast কুরিয়ারে সাবমিট করার সাথে সাথেই আপনি এখান থেকে সরাসরি রিয়েল-টাইম কুরিয়ার লোকেশন ও স্ট্যাটাস ট্র্যাক করতে পারবেন।'
+                            }
+                          </p>
+                        </div>
+                      )}
                     </div>
 
                     {/* Delivery & Customer Info */}

@@ -12,11 +12,21 @@ const logDebug = (...args: any[]) => {
  */
 export const fbqPageView = () => {
   if (typeof window !== 'undefined') {
-    if ((window as any).fbq) {
+    if (typeof (window as any).fbq === 'function') {
       logDebug('PageView tracked');
       (window as any).fbq('track', 'PageView');
     } else {
-      logDebug('PageView skipped - fbq not loaded');
+      let retries = 0;
+      const interval = setInterval(() => {
+        retries++;
+        if (typeof (window as any).fbq === 'function') {
+          clearInterval(interval);
+          logDebug('PageView tracked (after queue)');
+          (window as any).fbq('track', 'PageView');
+        } else if (retries >= 30) {
+          clearInterval(interval);
+        }
+      }, 100);
     }
   }
 };
@@ -24,17 +34,44 @@ export const fbqPageView = () => {
 /**
  * Trigger standard or custom events
  */
-export const fbqEvent = (name: string, options?: object) => {
+export const fbqEvent = (name: string, options?: Record<string, any>) => {
   if (typeof window !== 'undefined') {
-    if ((window as any).fbq) {
-      logDebug(`Event '${name}' tracked with options:`, options);
-      if (options) {
-        (window as any).fbq('track', name, options);
+    const track = () => {
+      let testCode: string | null = null;
+      try {
+        const urlParams = new URLSearchParams(window.location.search);
+        testCode = urlParams.get('test_event_code') || sessionStorage.getItem('fb_test_event_code');
+      } catch (e) {}
+
+      let finalOptions = options ? { ...options } : undefined;
+      if (testCode && finalOptions && !finalOptions.test_event_code) {
+        finalOptions.test_event_code = testCode;
+      }
+
+      logDebug(`Event '${name}' tracked with options:`, finalOptions);
+      if (finalOptions) {
+        (window as any).fbq('track', name, finalOptions);
       } else {
         (window as any).fbq('track', name);
       }
+    };
+
+    if (typeof (window as any).fbq === 'function') {
+      track();
     } else {
-      logDebug(`Event '${name}' skipped - fbq not loaded or Pixel ID missing`, options);
+      logDebug(`Event '${name}' queued - waiting for fbq`);
+      let retries = 0;
+      const interval = setInterval(() => {
+        retries++;
+        if (typeof (window as any).fbq === 'function') {
+          clearInterval(interval);
+          track();
+        } else if (retries >= 30) {
+          clearInterval(interval);
+          logDebug(`Event '${name}' timed out waiting for fbq`);
+        }
+      }, 100);
     }
   }
 };
+

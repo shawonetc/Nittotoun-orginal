@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Header from '../../components/Header';
 import Footer from '../../components/Footer';
@@ -9,7 +9,9 @@ import styles from './cart.module.css';
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Delete01Icon } from "@hugeicons/core-free-icons";
 import { supabase } from '../../lib/supabase';
+import { fbqEvent } from '../../lib/metaPixel';
 import OrderSuccess from '../../components/OrderSuccess';
+
 const getBaseTitle = (title: string): string => {
   return title
     .replace(/\s*\(6\/7\s*Feet\)/i, '')
@@ -25,6 +27,13 @@ const getBaseId = (id: any): string => {
   }
   return String(id);
 };
+
+const parseProductId = (id: any): number | null => {
+  const base = getBaseId(id);
+  const parsed = parseInt(base, 10);
+  return isNaN(parsed) ? null : parsed;
+};
+
 
 const isOptionActive = (itemId: any, optId: any, itemPrice: number, optPrice: number): boolean => {
   if (itemId === optId) return true;
@@ -91,6 +100,22 @@ export default function CartPage() {
   ];
 
 
+  const [hasInitiatedCheckout, setHasInitiatedCheckout] = useState(false);
+
+  // Track InitiateCheckout on page mount once cart items are loaded
+  useEffect(() => {
+    if (cartItems.length > 0 && !hasInitiatedCheckout) {
+      fbqEvent('InitiateCheckout', {
+        value: total,
+        currency: 'BDT',
+        content_type: 'product',
+        content_ids: cartItems.map(item => String(getBaseId(item.id))),
+        num_items: cartItems.reduce((acc, item) => acc + item.quantity, 0)
+      });
+      setHasInitiatedCheckout(true);
+    }
+  }, [cartItems, total, hasInitiatedCheckout]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (cartItems.length === 0) {
@@ -99,11 +124,21 @@ export default function CartPage() {
     }
 
     const formData = new FormData(e.target as HTMLFormElement);
+    const customerName = (formData.get('name') as string || '').trim();
+    const customerPhone = (formData.get('phone') as string || '').trim();
+    const address = (formData.get('address') as string || '').trim();
+    const notes = (formData.get('notes') as string || '').trim();
+
+    if (!customerName || !customerPhone) {
+      alert("দয়া করে আপনার নাম ও মোবাইল নম্বর প্রদান করুন।");
+      return;
+    }
+
     const orderData = {
-      customer_name: formData.get('name') as string,
-      customer_phone: formData.get('phone') as string,
-      address: formData.get('address') as string,
-      notes: formData.get('notes') as string,
+      customer_name: customerName,
+      customer_phone: customerPhone,
+      address: address,
+      notes: notes,
       shipping_cost: shippingCost,
       subtotal: subtotal,
       total: total,
@@ -124,11 +159,11 @@ export default function CartPage() {
 
       const orderItems = cartItems.map(item => ({
         order_id: order.id,
-        product_id: parseInt(getBaseId(item.id)) || null,
+        product_id: parseProductId(item.id),
         product_title: item.title,
         quantity: item.quantity,
         price: item.price,
-        image_url: item.imageUrl
+        image_url: item.imageUrl || null
       }));
 
       const { error: itemsError } = await supabase
@@ -138,18 +173,33 @@ export default function CartPage() {
       if (itemsError) throw itemsError;
 
       // Add Notification
-      const { error: notifyError } = await supabase.from('notifications').insert({
-        title: 'New Order Received',
-        message: `A new order (#ORD-${order.id}) has been placed by ${orderData.customer_name}.`,
-        type: 'success',
-        is_read: false
-      });
-
-      if (notifyError) {
+      try {
+        await supabase.from('notifications').insert({
+          title: 'New Order Received',
+          message: `A new order (#ORD-${order.id}) has been placed by ${orderData.customer_name}.`,
+          type: 'success',
+          is_read: false
+        });
+      } catch (notifyError) {
         console.error('Notification Error:', notifyError);
       }
 
-
+      // Facebook Pixel Purchase Event
+      fbqEvent('Purchase', {
+        value: total,
+        currency: 'BDT',
+        content_type: 'product',
+        content_ids: cartItems.map(item => String(getBaseId(item.id))),
+        contents: cartItems.map(item => ({
+          id: String(getBaseId(item.id)),
+          title: item.title,
+          quantity: item.quantity,
+          item_price: item.price,
+          price: item.price
+        })),
+        num_items: cartItems.reduce((acc, item) => acc + item.quantity, 0),
+        order_id: String(order.id)
+      });
 
       clearCart();
       setOrderResult({
@@ -158,7 +208,7 @@ export default function CartPage() {
         total: orderData.total
       });
       window.scrollTo({ top: 0, behavior: 'smooth' });
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error placing order:', error);
       alert("অর্ডার করার সময় সমস্যা হয়েছে। দয়া করে আবার চেষ্টা করুন।");
     } finally {

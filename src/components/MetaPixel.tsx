@@ -11,6 +11,14 @@ function MetaPixelTracker() {
   const isFirstRender = React.useRef(true);
 
   useEffect(() => {
+    // Persist test_event_code if present in query params for testing
+    const testCode = searchParams.get('test_event_code');
+    if (testCode) {
+      try {
+        sessionStorage.setItem('fb_test_event_code', testCode);
+      } catch (e) {}
+    }
+
     // Avoid tracking PageView twice on initial load since the base script already tracks it
     if (isFirstRender.current) {
       isFirstRender.current = false;

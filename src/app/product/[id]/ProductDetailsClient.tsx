@@ -59,6 +59,9 @@ export default function ProductDetailsClient({ product }: { product: Product }) 
   };
 
   React.useEffect(() => {
+    setSelectedProduct(product);
+    setActiveImage(product.imageUrl);
+
     // 1. If we have dynamic sizes in description JSON
     if (dynamicSizes) {
       const options: any[] = [];
@@ -107,7 +110,7 @@ export default function ProductDetailsClient({ product }: { product: Product }) 
       return;
     }
 
-    // 2. Fallback to old dynamic query by base title (for backwards compatibility with old DB setup)
+    // 2. Fallback for older separate DB row variations (only if they have explicit size suffixes)
     const fetchSizes = async () => {
       try {
         const { getProducts } = await import('../../../data/products');
@@ -115,8 +118,11 @@ export default function ProductDetailsClient({ product }: { product: Product }) 
         
         const currentBase = getBaseTitle(product.title);
         
-        // Find matching variations (products with same base title)
-        const matching = allProducts.filter(p => getBaseTitle(p.title) === currentBase);
+        // Only group if there are variations that explicitly mention size suffixes
+        const matching = allProducts.filter(p => 
+          getBaseTitle(p.title) === currentBase && 
+          (p.title.toLowerCase().includes('6/7') || p.title.toLowerCase().includes('7/8') || p.title.includes('৬/৭') || p.title.includes('৭/৮'))
+        );
         
         if (matching.length > 1) {
           const options = matching.map(p => {
@@ -153,56 +159,15 @@ export default function ProductDetailsClient({ product }: { product: Product }) 
           setSizeOptions(options);
           
           // Select current product
-          const current = options.find(o => o.id === product.id);
+          const current = options.find(o => String(o.id) === String(product.id));
           if (current) {
             setSelectedProduct(current);
             setActiveImage(current.imageUrl);
           }
         } else {
-          // Fallback static hardcoded size list for existing Waterproof Bed Cover items if not matched dynamically
-          const fallbackList = [
-            {
-              id: 4,
-              slug: 'waterproof-bed-cover-6-7-feet',
-              title: 'Waterproof Bed Cover (6/7 Feet)',
-              price: 1150,
-              originalPrice: 1349,
-              discount: 15,
-              sizeName: 'সাইজ, ৬ফুট x ৭ ফুট',
-              imageUrl: 'https://ugtzrchkumfbixffhfzz.supabase.co/storage/v1/object/public/products/0.4227430882981412.jpeg',
-              stockStatus: 'In Stock' as const,
-              isBestSeller: false,
-              galleryImages: [
-                'https://ugtzrchkumfbixffhfzz.supabase.co/storage/v1/object/public/products/0.4227430882981412.jpeg'
-              ]
-            },
-            {
-              id: 5,
-              slug: 'waterproof-bed-cover-7-8-feet',
-              title: 'Waterproof Bed Cover (7/8 Feet)',
-              price: 1350,
-              originalPrice: 1550,
-              discount: 13,
-              sizeName: 'সাইজ, ৭ফুট x ৮ ফুট',
-              imageUrl: 'https://ugtzrchkumfbixffhfzz.supabase.co/storage/v1/object/public/products/0.5863508889960549.jpeg',
-              stockStatus: 'In Stock' as const,
-              isBestSeller: true,
-              galleryImages: [
-                'https://ugtzrchkumfbixffhfzz.supabase.co/storage/v1/object/public/products/0.5863508889960549.jpeg'
-              ]
-            }
-          ];
-
-          if (product.id === 4 || product.id === 5) {
-            setSizeOptions(fallbackList);
-            const current = fallbackList.find(o => o.id === product.id) || fallbackList[0];
-            setSelectedProduct(current);
-            setActiveImage(current.imageUrl);
-          } else {
-            // For any other product without multi-size variants, keep its own data
-            setSelectedProduct(product);
-            setActiveImage(product.imageUrl);
-          }
+          setSizeOptions([]);
+          setSelectedProduct(product);
+          setActiveImage(product.imageUrl);
         }
       } catch (err) {
         console.error('Error fetching size variants:', err);
@@ -211,6 +176,8 @@ export default function ProductDetailsClient({ product }: { product: Product }) 
 
     if (isBedCover) {
       fetchSizes();
+    } else {
+      setSizeOptions([]);
     }
   }, [product, isBedCover]);
 

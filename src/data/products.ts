@@ -1,4 +1,17 @@
+import { cache } from 'react';
 import { supabase } from '../lib/supabase';
+
+// High performance in-memory cache with 60s TTL
+let productsMemoryCache: {
+  data: Product[];
+  timestamp: number;
+} | null = null;
+
+const CACHE_TTL_MS = 60 * 1000;
+
+export function invalidateProductsCache() {
+  productsMemoryCache = null;
+}
 
 export interface Product {
   id: number;
@@ -102,7 +115,7 @@ export const mockProducts: Product[] = [
   },
 ];
 
-const generateSlug = (text: string) => {
+export const generateSlug = (text: string) => {
   return text
     .toLowerCase()
     .trim()
@@ -111,12 +124,12 @@ const generateSlug = (text: string) => {
     .replace(/^-+|-+$/g, '');
 };
 
-const extractProductCode = (description?: string, title?: string): string => {
+export const extractProductCode = (description?: string, title?: string): string => {
   try {
     if (description && (description.trim().startsWith('{') || description.trim().startsWith('['))) {
       const parsed = JSON.parse(description);
       if (parsed && typeof parsed === 'object' && parsed.product_code) {
-        return parsed.product_code;
+        return parsed.product_code.trim();
       }
     }
   } catch (e) {
@@ -125,7 +138,7 @@ const extractProductCode = (description?: string, title?: string): string => {
 
   // Fallback to title matching
   if (title) {
-    const match = title.match(/\b(Y-\d+|W\d+|Y\d+|W-\d+)\b/i);
+    const match = title.match(/\b(Y-\d+|W\d+|Y\d+|W-\d+|P\d+|P-\d+|D\d+|D-\d+|B\d+|B-\d+)\b/i);
     if (match) {
       return match[1].toUpperCase();
     }
@@ -134,7 +147,43 @@ const extractProductCode = (description?: string, title?: string): string => {
   return '';
 };
 
-export async function getProducts(): Promise<Product[]> {
+export function buildProductSlug(p: { id: number; title: string; slug?: string; description?: string; category?: string }): string {
+  const code = extractProductCode(p.description, p.title);
+  let slug = (p.slug || '').trim();
+
+  const isGenericSlug = !slug || 
+    slug === 'waterproof-bedsheet' || 
+    slug === 'waterproof-bedsheet-with-cover' || 
+    slug === 'reusable-diaper' || 
+    slug === 'product';
+
+  if (isGenericSlug) {
+    let base = generateSlug(p.title);
+    if (!base || base === 'product') {
+      if (p.category === 'ডায়াপার') base = 'reusable-diaper';
+      else if (p.category === 'ওয়াটারপ্রুফ চাদর') base = 'waterproof-bedsheet';
+      else base = 'product';
+    }
+    if (base === 'waterproof-bedsheet-with-cover') {
+      base = 'waterproof-bedsheet';
+    }
+    const cleanCode = code ? code.toLowerCase().replace(/[^a-z0-9]/g, '') : '';
+    if (cleanCode) {
+      slug = `${base}-${cleanCode}`;
+    } else {
+      slug = `${base}-${p.id}`;
+    }
+  }
+
+  return slug;
+}
+
+export const getProducts = cache(async (): Promise<Product[]> => {
+  const now = Date.now();
+  if (productsMemoryCache && (now - productsMemoryCache.timestamp < CACHE_TTL_MS)) {
+    return productsMemoryCache.data;
+  }
+
   const { data, error } = await supabase
     .from('products')
     .select('*')
@@ -142,16 +191,12 @@ export async function getProducts(): Promise<Product[]> {
 
   if (error) {
     console.error('Error fetching products:', error);
+    if (productsMemoryCache) return productsMemoryCache.data;
     return mockProducts; // Fallback
   }
 
-  return data.map(p => {
-    let slug = p.slug;
-    if (!slug || slug === 'waterproof-bedsheet' || slug === 'reusable-diaper') {
-      const code = extractProductCode(p.description, p.title);
-      const base = generateSlug(p.title) || 'product';
-      slug = code ? `${base}-${code.toLowerCase()}` : `${base}-${p.id}`;
-    }
+  const mapped = data.map(p => {
+    const slug = buildProductSlug(p);
     return {
       id: p.id,
       slug: slug,
@@ -167,12 +212,35 @@ export async function getProducts(): Promise<Product[]> {
       productCode: extractProductCode(p.description, p.title)
     };
   });
-}
 
-export async function getProductBySlug(slug: string): Promise<Product | undefined> {
-  const decodedSlug = decodeURIComponent(slug).trim();
+  productsMemoryCache = {
+    data: mapped,
+    timestamp: now
+  };
 
-  // First attempt: fetch by exact slug
+  return mapped;
+});
+
+export const getProductBySlug = cache(async (slug: string): Promise<Product | undefined> => {
+  const decodedSlug = decodeURIComponent(slug).trim().toLowerCase();
+
+  // Instant In-Memory Lookup: If products are cached in memory, resolve in ~0ms!
+  if (productsMemoryCache && (Date.now() - productsMemoryCache.timestamp < CACHE_TTL_MS)) {
+    const memoryFound = productsMemoryCache.data.find(p => 
+      p.slug.toLowerCase() === decodedSlug || 
+      String(p.id) === decodedSlug ||
+      (p.productCode && decodedSlug.endsWith(p.productCode.toLowerCase()))
+    );
+    if (memoryFound) return memoryFound;
+  }
+
+  // If slug is purely numeric, look up directly by ID
+  if (/^\d+$/.test(decodedSlug)) {
+    const product = await getProductById(parseInt(decodedSlug, 10));
+    if (product) return product;
+  }
+
+  // Attempt 1: Fetch by exact slug match in Supabase
   const { data, error } = await supabase
     .from('products')
     .select('*')
@@ -183,7 +251,7 @@ export async function getProductBySlug(slug: string): Promise<Product | undefine
     const item = data[0];
     return {
       id: item.id,
-      slug: item.slug,
+      slug: buildProductSlug(item),
       title: item.title,
       price: item.price,
       originalPrice: item.original_price,
@@ -197,24 +265,37 @@ export async function getProductBySlug(slug: string): Promise<Product | undefine
     };
   }
 
-  // Second attempt: check if slug has embedded ID (e.g. product-55 or waterproof-bedsheet-22) or is numeric
-  const matchId = decodedSlug.match(/-(\d+)$/) || decodedSlug.match(/^(\d+)$/);
+  // Attempt 2: If slug has trailing ID (e.g. product-55 or reusable-diaper-57)
+  const matchId = decodedSlug.match(/-(\d+)$/);
   if (matchId) {
     const id = parseInt(matchId[1], 10);
     const product = await getProductById(id);
     if (product) return product;
   }
 
-  // Third attempt: fetch all products and find matching slug
+  // Attempt 3: Fetch all products and match by calculated slug, or product code
   const products = await getProducts();
-  const found = products.find(p => p.slug === decodedSlug || p.slug.toLowerCase() === decodedSlug.toLowerCase());
+  let found = products.find(p => p.slug.toLowerCase() === decodedSlug.toLowerCase());
   if (found) return found;
+
+  // Match by product code extracted from slug (e.g. waterproof-bedsheet-p32 -> p32)
+  const codeMatch = decodedSlug.match(/-([a-z0-9]+)$/i);
+  if (codeMatch) {
+    const code = codeMatch[1].toLowerCase();
+    found = products.find(p => p.productCode && p.productCode.toLowerCase().replace(/[^a-z0-9]/g, '') === code);
+    if (found) return found;
+  }
 
   console.error('Product not found for slug:', decodedSlug);
   return mockProducts.find(p => p.slug === decodedSlug);
-}
+});
 
-export async function getProductById(id: number): Promise<Product | undefined> {
+export const getProductById = cache(async (id: number): Promise<Product | undefined> => {
+  if (productsMemoryCache && (Date.now() - productsMemoryCache.timestamp < CACHE_TTL_MS)) {
+    const cached = productsMemoryCache.data.find(p => p.id === id);
+    if (cached) return cached;
+  }
+
   const { data, error } = await supabase
     .from('products')
     .select('*')
@@ -228,7 +309,7 @@ export async function getProductById(id: number): Promise<Product | undefined> {
 
   return {
     id: data.id,
-    slug: data.slug || generateSlug(data.title) || data.id.toString(),
+    slug: buildProductSlug(data),
     title: data.title,
     price: data.price,
     originalPrice: data.original_price,
@@ -240,7 +321,7 @@ export async function getProductById(id: number): Promise<Product | undefined> {
     callToOrder: data.call_to_order,
     productCode: extractProductCode(data.description, data.title)
   };
-}
+});
 
 export async function getProductsByCategory(category: string): Promise<Product[]> {
   const cleanCat = category
@@ -281,7 +362,7 @@ export async function getProductsByCategory(category: string): Promise<Product[]
 
   return data.map(p => ({
     id: p.id,
-    slug: p.slug || generateSlug(p.title) || p.id.toString(),
+    slug: buildProductSlug(p),
     title: p.title,
     price: p.price,
     originalPrice: p.original_price,

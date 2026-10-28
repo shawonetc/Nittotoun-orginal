@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { revalidatePath } from 'next/cache';
+import { invalidateProductsCache } from '../../../data/products';
 
 export async function GET(request: NextRequest) {
   const path = request.nextUrl.searchParams.get('path');
   const slug = request.nextUrl.searchParams.get('slug');
 
   try {
+    // Clear in-memory cache
+    invalidateProductsCache();
+
     // Revalidate home page cache
     revalidatePath('/');
     

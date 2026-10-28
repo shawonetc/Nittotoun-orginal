@@ -144,7 +144,14 @@ const AddProductPage: React.FC = () => {
       const activeGallery = formData.gallery_images.filter(img => img !== '');
       const image_url = formData.image_url || activeGallery[0];
       const active_category = formData.category;
-      const slug = generateSlug(formData.title);
+      let baseSlug = generateSlug(formData.title);
+      if (!baseSlug) {
+        if (formData.category === 'ডায়াপার') baseSlug = 'reusable-diaper';
+        else if (formData.category === 'ওয়াটারপ্রুফ চাদর') baseSlug = 'waterproof-bedsheet';
+        else baseSlug = 'product';
+      }
+      const cleanCode = formData.product_code ? formData.product_code.toLowerCase().replace(/[^a-z0-9]/g, '') : '';
+      const slug = cleanCode ? `${baseSlug}-${cleanCode}` : `${baseSlug}-${Date.now().toString().slice(-4)}`;
 
       if (enableSizes) {
         // Validate size inputs

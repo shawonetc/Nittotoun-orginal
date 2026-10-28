@@ -8,8 +8,14 @@ import { META_PIXEL_ID, fbqPageView } from '../lib/metaPixel';
 function MetaPixelTracker() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const isFirstRender = React.useRef(true);
 
   useEffect(() => {
+    // Avoid tracking PageView twice on initial load since the base script already tracks it
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
     fbqPageView();
   }, [pathname, searchParams]);
 
@@ -41,6 +47,7 @@ export default function MetaPixel() {
             s.parentNode.insertBefore(t,s)}(window, document,'script',
             'https://connect.facebook.net/en_US/fbevents.js');
             fbq('init', '${META_PIXEL_ID}');
+            fbq('track', 'PageView');
           `,
         }}
       />

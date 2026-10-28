@@ -46,7 +46,12 @@ export default function DiaperSection({ products }: DiaperSectionProps) {
         <div className={styles.grid}>
           {products.map((diaper) => (
             <div key={diaper.id} className={styles.card}>
-              <Link href={`/product/${diaper.slug || diaper.id}`} className={styles.cardLink}>
+              <Link 
+                href={`/product/${diaper.slug || diaper.id}`} 
+                className={styles.cardLink}
+                prefetch={true}
+                onMouseEnter={() => router.prefetch(`/product/${diaper.slug || diaper.id}`)}
+              >
                 <div className={styles.imageWrapper}>
                   <Image
                     src={diaper.imageUrl}

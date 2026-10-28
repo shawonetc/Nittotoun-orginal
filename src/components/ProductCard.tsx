@@ -74,7 +74,12 @@ export default function ProductCard({ id, slug, title, price, maxPrice, original
 
   return (
     <div className={styles.card}>
-      <Link href={`/product/${slug || id}`} className={styles.cardLink}>
+      <Link 
+        href={`/product/${slug || id}`} 
+        className={styles.cardLink}
+        prefetch={true}
+        onMouseEnter={() => router.prefetch(`/product/${slug || id}`)}
+      >
         <div className={styles.imageContainer}>
           {discount > 0 && <span className={styles.badge}>-{discount}%</span>}
           {imageUrl ? (

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { Suspense } from 'react';
 import { getProductBySlug, getRelatedProducts } from '../../../data/products';
 import { notFound } from 'next/navigation';
 import Header from '../../../components/Header';
@@ -39,25 +39,31 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   };
 }
 
+async function RelatedSection({ productId }: { productId: number }) {
+  const relatedProducts = await getRelatedProducts(productId, 4);
+  return (
+    <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '0 20px', marginBottom: '40px' }}>
+      <ProductGrid title="Related Products" products={relatedProducts} />
+    </div>
+  );
+}
+
 export default async function ProductPage({ params }: { params: Promise<{ id: string }> }) {
   const resolvedParams = await params;
   const productSlug = resolvedParams.id;
   const product = await getProductBySlug(productSlug);
 
-
   if (!product) {
     notFound();
   }
 
-  const relatedProducts = await getRelatedProducts(product.id, 4);
-
   return (
     <>
       <Header />
-      <ProductDetailsClient product={product} />
-      <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '0 20px', marginBottom: '40px' }}>
-        <ProductGrid title="Related Products" products={relatedProducts} />
-      </div>
+      <ProductDetailsClient key={product.id} product={product} />
+      <Suspense fallback={<div style={{ minHeight: '120px' }} />}>
+        <RelatedSection productId={product.id} />
+      </Suspense>
       <Footer />
     </>
   );
